@@ -13,7 +13,7 @@ Parameters:
     Default: call
   apiGatewayHTTPMethod:
     Type: String
-    Default: GET
+    Default: PUT
   lambdaFunctionName:
     Type: String
     AllowedPattern: "[a-zA-Z0-9]+[a-zA-Z0-9-]+[a-zA-Z0-9]+"
@@ -35,12 +35,16 @@ Resources:
     Properties:
       AuthorizationType: NONE
       HttpMethod: !Ref apiGatewayHTTPMethod
+      RequestParameters:
+        method.request.path.action: true
       Integration:
         IntegrationHttpMethod: POST
         Type: AWS
         Uri: !Sub
           - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
           - lambdaArn: !GetAtt lambdaFunction.Arn
+        RequestParameters:
+          integration.request.path.action: method.request.path.action
         IntegrationResponses:
           - StatusCode: 200
             ResponseTemplates: { "application/json": "$input.json('$.body')" }
@@ -64,9 +68,16 @@ Resources:
       Code:
         ZipFile: |
           exports.handler = async (event) => {
-              let date = new Date()
-             return "Current date is: "+ date
+          let number1=parseInt(event.number1)
+          let number2=parseInt(event.number2)
+          let sum = number1+number2
+          return {
+            statusCode: 200,
+            headers: {"content-type":"text/plain"},
+            body: `The sum is: ${sum}`
+                  }
           };
+
       Description: Example Lambda Function
       FunctionName: !Ref lambdaFunctionName
       Handler: index.handler
