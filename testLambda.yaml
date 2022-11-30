@@ -22,7 +22,7 @@ Parameters:
     #Res Config
 Resources:
   apiGateway:
-    Type: AWS::ApiGateway::RestApi
+    Type: AWS::ApiGatewayV2::Api
     Properties:
       Description: Example API Gateway
       EndpointConfiguration:
