@@ -1,0 +1,52 @@
+# @format
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: API Gateway and Lambda Function with AWS::ApiGatewayV2::Api
+
+Parameters:
+  ApiGatewayName:
+    Type: String
+    Default: gatewayv2
+  LambdaFunctionName:
+    Type: String
+    Default: new-lambda
+
+Resources:
+  #Gateway Init
+  HttpApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref ApiGatewayName
+      ProtocolType: HTTP
+
+  #Gateway Integration
+  HttpApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+    ApiId: !Ref HttpApiGateway
+    IntegrationType: AWS_PROXY
+    IntegrationUri: !GetAtt #Lambda Handler
+
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+          let number1=parseInt(event.number1)
+          let number2=parseInt(event.number2)
+          let sum = number1+number2
+          return {
+            statusCode: 200,
+            headers: {"content-type":"text/plain"},
+            body: `The sum is: ${sum}`
+                  }
+          };
+
+      Description: Example Lambda Function
+      FunctionName: !Ref LambdaFunctionName
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt lambdaIAMRole.Arn
+      Runtime: nodejs16.x
