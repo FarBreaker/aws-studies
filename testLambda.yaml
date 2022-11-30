@@ -1,0 +1,22 @@
+# @format
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Lambda Testing
+Resources:
+  MyLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Role: arn:aws:iam::000468819253:role/lambda-role
+      Runtime: nodejs16.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+              let date = new Date()
+             return "Current date is: "+ date;
+          };
+
+  MyLambdaUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !Ref MyLambdaFunction
