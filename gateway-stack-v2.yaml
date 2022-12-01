@@ -1,0 +1,129 @@
+# @format
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: API Gateway and Lambda Function with AWS::ApiGatewayV2::Api
+
+Parameters:
+  ApiGatewayName:
+    Type: String
+    Default: gatewayv2
+  LambdaFunctionName:
+    Type: String
+    Default: new-lambda
+
+Resources:
+  #Gateway Init
+  HttpApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref ApiGatewayName
+      ProtocolType: HTTP
+
+  #Gateway Integration
+  HttpApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt LambdaFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  #Gateway Route
+  HttpApiRoute:
+    Type: AWS::ApiGatewayV2::Route
+    DependsOn: HttpApiIntegration
+    Properties:
+      RouteKey: $default
+      ApiId: !Ref HttpApiGateway
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref HttpApiIntegration
+
+  #Gateway Stage
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: $default
+      ApiId: !Ref HttpApiGateway
+      AutoDeploy: true
+
+  lambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: AppendToLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  #Allow Api to invoke Lambda
+  HandlerLambdaPermissionApi:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join
+        - ""
+        - - "arn:"
+          - !Ref AWS::Partition
+          - ":execute-api:"
+          - !Ref AWS::Region
+          - ":"
+          - !Ref AWS::AccountId
+          - ":"
+          - !Ref HttpApiGateway
+          - /*
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+          let number1=parseInt(event.number1)
+          let number2=parseInt(event.number2)
+          let sum = number1+number2
+          return {
+            statusCode: 200,
+            headers: {"content-type":"text/plain"},
+            body: `The sum is: ${sum}`
+                  }
+          };
+
+      Description: Example Lambda Function
+      FunctionName: !Ref LambdaFunctionName
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt lambdaIAMRole.Arn
+      Runtime: nodejs16.x
+
+#Outputs
+Outputs:
+  ApiUrl:
+    Description: URL of the HTTP API
+    Value: !Join
+      - ""
+      - - !Ref HttpApiGateway
+        - .execute-api.
+        - !Ref AWS::Region
+        - .
+        - !Ref AWS::URLSuffix
