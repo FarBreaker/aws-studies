@@ -91,9 +91,23 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: "*"
+        - PolicyName: ScanTablesPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:ListTables
+                Resource: "*"
+        - PolicyName: PutAndGetItemFromTable
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:ListTables
                 Resource: !Join
                   - ""
                   - - "arn:aws:dynamodb:*:*:table/"
@@ -118,6 +132,13 @@ Resources:
           - !Ref HttpApiGateway
           - /*
 
+  HandlerLambdaUpdatePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:UpdateFunctionCode
+      FunctionName: !GetAtt LambdaFunction.Arn
+      Principal: arn:aws:iam::000468819253:user/alibi
+
   #Lambda Function Declaration
   LambdaFunction:
     Type: AWS::Lambda::Function
@@ -127,29 +148,35 @@ Resources:
           const AWS = require('aws-sdk');
           const docClient = new AWS.DynamoDB.DocumentClient()
 
-          async function createItem(params)
-          {
-          try{
-          await docClient.put(params).promise()}catch (err){
-          return err}
+          async function createItem(params) {
+              try {
+                  await docClient.put(params).promise()
+              } catch (err) {
+                  return err
+              }
           }
-          exports.handler = async (event)=>{
-          let params={
-          TableName: process.env.DATABASE_TABLE,
-          Item: {
-          ID: Math.random().toString(),
-          number1:JSON.parse(event.body).number1,
-          number2:JSON.parse(event.body).number2,
-            timestamp:Date(),
-            ip: event.requestContext.http.sourceIp
-
-          }}
-          try{
-            await createItem(params)
-          return {body:"Item successfully inserted"}
-          }catch (err){
-          return {error:err}}}
-
+          exports.handler = async (event) => {
+              let params = {
+                  TableName: process.env.DATABASE_TABLE,
+                  Item: {
+                      ID: Math.random().toString(),
+                      number1: JSON.parse(event.body).number1,
+                      number2: JSON.parse(event.body).number2,
+                      timestamp: Date(),
+                      ip: event.requestContext.http.sourceIp
+                  }
+              }
+              try {
+                  await createItem(params)
+                  return {
+                      statusCode: 200,
+                      headers: { "content-type": "application/json" },
+                      body: "Item successfully inserted"
+                  }
+              } catch (err) {
+                  return { error: err }
+              }
+          }
       Description: Example Lambda Function
       Environment:
         Variables:
