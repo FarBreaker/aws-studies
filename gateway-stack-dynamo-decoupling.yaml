@@ -1,0 +1,216 @@
+# @format
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: API Gateway and Lambda Function with AWS::ApiGatewayV2::Api with DynamoTable and decoupled Lambdas
+
+Parameters:
+  ApiGatewayName:
+    Type: String
+    Default: GroundControl
+  ReaderFunctionName:
+    Type: String
+    Default: Lander
+  WriterFunctionName:
+    Type: String
+    Default: Thruster
+  DynamoTableName:
+    Type: String
+    Default: Hydrogen
+
+Resources:
+  #?DynamoTable
+  DynamoInstance:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      TableName: !Ref DynamoTableName
+      AttributeDefinitions:
+        - AttributeName: ID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ID
+          KeyType: HASH
+
+  #?Gateway Init
+  HttpApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref ApiGatewayName
+      ProtocolType: HTTP
+
+  #? Gateway Integration to call writer lambda
+  HttpApiIntegrationWrite:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt LambdaWriter.Arn
+      PayloadFormatVersion: "2.0"
+
+  #? Gateway integration to call reader lambda
+  HttpApiIntegrationRead:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt LambdaReader.Arn
+      PayloadFormatVersion: "2.0"
+
+  #?Gateway Route for Writer Lambda
+  HttpApiRouteWrite:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      RouteKey: PUT /write
+      OperationName: !Ref WriterFunctionName
+      ApiId: !Ref HttpApiGateway
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref HttpApiIntegrationWrite
+
+  #?Gateway Route for Reader Lambda
+  HttpApiRouteRead:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      RouteKey: GET /read
+      ApiId: !Ref HttpApiGateway
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref HttpApiIntegrationRead
+
+  #?Gateway Stage
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: $default
+      ApiId: !Ref HttpApiGateway
+      AutoDeploy: true
+
+  #?IAM Role to allow sts:Allow
+  lambdaIAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: AppendToLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+        - PolicyName: PassToEvents
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:*
+                Resource: "arn:aws:events:*:*:*"
+        - PolicyName: ScanTablesPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:ListTables
+                Resource: "*"
+        - PolicyName: PutAndGetItemFromTable
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: !Sub "arn:aws:dynamodb:*:*:table/${DynamoTableName}"
+
+  #?Allow Api to invoke Lambda
+  WriterLambdaPermissionApi:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaWriter.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApiGateway}/*"
+
+  ReaderLambdaPermissionApi:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt LambdaReader.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApiGateway}/*"
+
+  #?Allow User to update writer Lambda code
+  WriterLambdaUpdatePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:UpdateFunctionCode
+      FunctionName: !GetAtt LambdaWriter.Arn
+      Principal: arn:aws:iam::000468819253:user/alibi
+  #?Allow User to update reader Lambda Code
+  ReaderLambdaUpdatePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:UpdateFunctionCode
+      FunctionName: !GetAtt LambdaReader.Arn
+      Principal: arn:aws:iam::000468819253:user/alibi
+
+  #?Lambda Write Function Declaration
+  LambdaWriter:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {}
+      Description: Writer Lambda Function
+      Environment:
+        Variables:
+          DATABASE_TABLE: !Ref DynamoInstance
+      FunctionName: !Ref WriterFunctionName
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt lambdaIAMRole.Arn
+      Runtime: nodejs16.x
+
+  #?Lambda Reader Function Declaration
+  LambdaReader:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          exports.handler = async(event)=>{}
+      Description: Reader Lambda Function
+      Environment:
+        Variables:
+          DATABASE_TABLE: !Ref DynamoInstance
+      FunctionName: !Ref ReaderFunctionName
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt lambdaIAMRole.Arn
+      Runtime: nodejs16.x
+
+#?Outputs
+Outputs:
+  ApiUrl:
+    Description: URL of the HTTP API
+    Value: !Sub "https://${HttpApiGateway}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  Table:
+    Description: Test table
+    Value: !Ref DynamoInstance
