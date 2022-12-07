@@ -9,13 +9,16 @@ Parameters:
     Default: GroundControl
   ReaderFunctionName:
     Type: String
-    Default: Lander
+    Default: Engine2
   WriterFunctionName:
     Type: String
-    Default: Thruster
+    Default: Engine1
   DynamoTableName:
     Type: String
     Default: Hydrogen
+  SQSQueueName:
+    Type: String
+    Default: Conductor
 
 Resources:
   #?DynamoTable
@@ -30,6 +33,13 @@ Resources:
       KeySchema:
         - AttributeName: ID
           KeyType: HASH
+  #? SQS ConductorQueue
+  SQSConductor:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+      QueueName: !Sub "${SQSQueueName}.fifo"
+      MessageRetentionPeriod: 60
 
   #?Gateway Init
   HttpApiGateway:
@@ -74,7 +84,7 @@ Resources:
   HttpApiRouteRead:
     Type: AWS::ApiGatewayV2::Route
     Properties:
-      RouteKey: GET /read
+      RouteKey: PUT /read
       ApiId: !Ref HttpApiGateway
       Target: !Join
         - /
@@ -114,22 +124,6 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: "*"
-        - PolicyName: PassToEvents
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - events:*
-                Resource: "arn:aws:events:*:*:*"
-        - PolicyName: ScanTablesPolicy
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - dynamodb:ListTables
-                Resource: "*"
         - PolicyName: PutAndGetItemFromTable
           PolicyDocument:
             Version: "2012-10-17"
@@ -138,7 +132,15 @@ Resources:
                 Action:
                   - dynamodb:PutItem
                   - dynamodb:GetItem
-                Resource: !Sub "arn:aws:dynamodb:*:*:table/${DynamoTableName}"
+                Resource: !GetAtt DynamoInstance.Arn
+        - PolicyName: SQSSendPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt SQSConductor.Arn
 
   #?Allow Api to invoke Lambda
   WriterLambdaPermissionApi:
@@ -183,6 +185,8 @@ Resources:
       Environment:
         Variables:
           DATABASE_TABLE: !Ref DynamoInstance
+          REGION: !Ref AWS::Region
+          FIFOURL: !Ref SQSConductor
       FunctionName: !Ref WriterFunctionName
       Handler: index.handler
       MemorySize: 128
@@ -199,7 +203,8 @@ Resources:
       Description: Reader Lambda Function
       Environment:
         Variables:
-          DATABASE_TABLE: !Ref DynamoInstance
+          REGION: !Ref AWS::Region
+          FIFOURL: !Ref SQSConductor
       FunctionName: !Ref ReaderFunctionName
       Handler: index.handler
       MemorySize: 128

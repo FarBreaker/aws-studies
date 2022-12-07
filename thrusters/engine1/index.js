@@ -1,10 +1,10 @@
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
 
 exports.handler = async (event) => {
-
     let input = {
-        DelaySeconds: 15,
         QueueUrl: process.env.FIFOURL,
+        MessageGroupId: "group1",
+        MessageDeduplicationId: Math.random(),
         MessageBody: {
             number1: JSON.parse(event.body).number1,
             number2: JSON.parse(event.body).number2,
@@ -14,10 +14,15 @@ exports.handler = async (event) => {
     }
     const client = new SQSClient({ region: process.env.REGION })
     const command = new SendMessageCommand(input)
-    const response = await client.send(command)
-    return {
-        statusCode: 200,
-        headers: { "content-type": "application/json" },
-        body: response
+    try {
+        const response = await client.send(command)
+        return {
+            statusCode: 200,
+            headers: { "content-type": "application/json" },
+            body: response
+        }
+    } catch (error) {
+        return error
+
     }
 }
