@@ -1,5 +1,6 @@
 {
-  "dependencies": {
-    "@aws-sdk/client-sqs": "^3.224.0"
-  }
+	"type": "module",
+	"dependencies": {
+		"@aws-sdk/client-sqs": "^3.224.0"
+	}
 }

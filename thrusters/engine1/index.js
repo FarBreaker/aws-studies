@@ -1,30 +1,60 @@
-const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 
-exports.handler = async (event) => {
+export async function handler(event) {
     let number1 = JSON.parse(event.body).number1
     let number2 = JSON.parse(event.body).number2
-    let input = {
-        QueueUrl: process.env.FIFOURL,
-        MessageGroupId: "group1",
-        MessageDeduplicationId: Math.random(),
-        MessageBody: {
+    let sum = number1 + number2
+    // let input = {
+    //     QueueUrl: process.env.FIFOURL,
+    //     MessageGroupId: "group1",
+    //     MessageDeduplicationId: Math.random(),
+    //     MessageBody: JSON.stringify({
+    //         number1: number1,
+    //         number2: number2,
+    //         sum: sum,
+    //         ip: event.requestContext.http.sourceIp,
+    //         timestamp: Date()
+    //     })
+    // }
+    function MakeId(length) {
+        let result = '';
+        let characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        let charactersLength = characters.length;
+        for (let i = 0; i < length; i++) {
+            result += characters.charAt(Math.floor(Math.random() * charactersLength));
+        }
+        return result;
+    }
+    const params = {
+        MessageAttributes: {
+            Title: {
+                DataType: "String",
+                StringValue: "Function Entry"
+            }
+        },
+        MessageBody: JSON.stringify({
             number1: number1,
             number2: number2,
+            sum: sum,
             ip: event.requestContext.http.sourceIp,
             timestamp: Date()
-        }
+        }),
+        QueueUrl: process.env.FIFOURL,
+        MessageDeduplicationId: MakeId(10),
+        MessageGroupId: "Group1"
     }
     const client = new SQSClient({ region: process.env.REGION })
-    const command = new SendMessageCommand(input)
-    let sum = number1 + number2
     try {
-        const response = await client.send(command)
+        const data = await client.send(new SendMessageCommand(params))
+        console.log("Success, message sent. MessageID: ", data.MessageId)
         return {
             statusCode: 200,
             headers: { "content-type": "application/json" },
-            body: response
+            body: "The sum is: " + sum + " Success, message ID: " + data.MessageId
         }
-    } catch (error) {
-        return error
+    } catch (err) {
+        return err.toString()
     }
+
+
 }
