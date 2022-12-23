@@ -37,9 +37,9 @@ Resources:
   SQSConductor:
     Type: AWS::SQS::Queue
     Properties:
-      FifoQueue: true
-      QueueName: !Sub "${SQSQueueName}.fifo"
-      MessageRetentionPeriod: 60
+      DelaySeconds: 6
+      ReceiveMessageWaitTimeSeconds: 20
+      QueueName: !Ref SQSQueueName
 
   #?Gateway Init
   HttpApiGateway:
@@ -47,16 +47,6 @@ Resources:
     Properties:
       Name: !Ref ApiGatewayName
       ProtocolType: HTTP
-
-  # #? Gateway Integration to call writer lambda
-  # HttpApiIntegrationWrite:
-  #   Type: AWS::ApiGatewayV2::Integration
-  #   Properties:
-  #     ApiId: !Ref HttpApiGateway
-  #     IntegrationType: AWS_PROXY
-  #     IntegrationMethod: POST
-  #     IntegrationUri: !GetAtt Lambda2.Arn
-  #     PayloadFormatVersion: "2.0"
 
   #? Gateway integration to call reader lambda
   HttpApiIntegrationRead:
@@ -112,15 +102,6 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: "*"
-        # - PolicyName: PutAndGetItemFromTable
-        #   PolicyDocument:
-        #     Version: "2012-10-17"
-        #     Statement:
-        #       - Effect: Allow
-        #         Action:
-        #           - dynamodb:PutItem
-        #           - dynamodb:GetItem
-        #         Resource: !GetAtt DynamoInstance.Arn
         - PolicyName: SQSSendPolicy
           PolicyDocument:
             Version: "2012-10-17"
@@ -128,9 +109,6 @@ Resources:
               - Effect: Allow
                 Action:
                   - sqs:SendMessage
-                  # - sqs:ReceiveMessage
-                  # - sqs:DeleteMessage
-                  # - sqs:GetQueueAttributes
                 Resource: !GetAtt SQSConductor.Arn
   #?IAM Role to allow sts:assumerole on lambda 1
   lambda2IAMRole:
@@ -166,26 +144,16 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:GetItem
                 Resource: !GetAtt DynamoInstance.Arn
-        - PolicyName: SQSSendPolicy
+        - PolicyName: SQSReadAndDeletePolicy
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
                 Action:
-                  # - sqs:SendMessage
                   - sqs:ReceiveMessage
                   - sqs:DeleteMessage
                   - sqs:GetQueueAttributes
                 Resource: !GetAtt SQSConductor.Arn
-
-  # #?Allow Api to invoke Lambda
-  # WriterLambdaPermissionApi:
-  #   Type: AWS::Lambda::Permission
-  #   Properties:
-  #     Action: lambda:InvokeFunction
-  #     FunctionName: !GetAtt Lambda2.Arn
-  #     Principal: apigateway.amazonaws.com
-  #     SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApiGateway}/*"
 
   ReaderLambdaPermissionApi:
     Type: AWS::Lambda::Permission
@@ -199,10 +167,12 @@ Resources:
   ConductorSourceMapping:
     Type: AWS::Lambda::EventSourceMapping
     Properties:
-      BatchSize: 10
       Enabled: true
       FunctionName: !GetAtt Lambda2.Arn
       EventSourceArn: !GetAtt SQSConductor.Arn
+      BatchSize: 10
+      Queues:
+        - !Ref SQSQueueName
 
   #?Allow User to update writer Lambda code
   WriterLambdaUpdatePermission:
