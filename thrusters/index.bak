@@ -1,0 +1,43 @@
+const { SQSClient, ReceiveMessageCommand } = require("@aws-sdk/client-sqs");
+const { DynamoDBClient, PutItemCommand } = require("@aws-sdk/client-dynamodb")
+
+exports.handler = async (event) => {
+    function MakeId(length) {
+        let result = '';
+        let characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        let charactersLength = characters.length;
+        for (let i = 0; i < length; i++) {
+            result += characters.charAt(Math.floor(Math.random() * charactersLength));
+        }
+        return result;
+    }
+    let SQSinput = {
+        QueueUrl: process.env.FIFOURL,
+        AttributeName: {
+            MessageGroupId: "group1"
+        }
+    }
+    let DynamoInput = {
+        Item: {
+            ID: MakeId(10),
+            testField: "hello Dynamo"
+        },
+        TableName: process.env.DATABASE_TABLE
+    }
+    const SQSclient = new SQSClient({ region: process.env.REGION })
+    const SQScommand = new ReceiveMessageCommand(SQSinput)
+    const DynamoClient = new DynamoDBClient({ region: process.env.REGION })
+    const DynamoCommand = new PutItemCommand(DynamoInput)
+
+    // SQSResponse.then(() => {
+    //     const DynamoResponse = DynamoClient.send(DynamoCommand);
+    //     return DynamoResponse
+    // }
+    // )
+    async function SQSGetMessage() {
+        const SQSResponse = await SQSclient.send(SQScommand)
+        return SQSResponse
+    }
+    return SQSGetMessage()
+
+}

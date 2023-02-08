@@ -1,0 +1,237 @@
+# @format
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: API Gateway and Lambda Function with AWS::ApiGatewayV2::Api with DynamoTable and decoupled Lambdas
+
+Parameters:
+  ApiGatewayName:
+    Type: String
+    Default: GroundControl
+  Lambda1FunctionName:
+    Type: String
+    Default: Engine1
+  Lambda2FunctionName:
+    Type: String
+    Default: Engine2
+  DynamoTableName:
+    Type: String
+    Default: Hydrogen
+  SQSQueueName:
+    Type: String
+    Default: Conductor
+
+Resources:
+  #?DynamoTable
+  DynamoInstance:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      TableName: !Ref DynamoTableName
+      AttributeDefinitions:
+        - AttributeName: ID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: ID
+          KeyType: HASH
+  #? SQS ConductorQueue
+  SQSConductor:
+    Type: AWS::SQS::Queue
+    Properties:
+      DelaySeconds: 6
+      ReceiveMessageWaitTimeSeconds: 20
+      QueueName: !Ref SQSQueueName
+
+  #?Gateway Init
+  HttpApiGateway:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref ApiGatewayName
+      ProtocolType: HTTP
+
+  #? Gateway integration to call reader lambda
+  HttpApiIntegrationRead:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApiGateway
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt Lambda1.Arn
+      PayloadFormatVersion: "2.0"
+
+  #?Gateway Route for Lambda 1
+  HttpApiRouteRead:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      RouteKey: $default
+      ApiId: !Ref HttpApiGateway
+      Target: !Join
+        - /
+        - - integrations
+          - !Ref HttpApiIntegrationRead
+
+  #?Gateway Stage
+  HttpApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: $default
+      ApiId: !Ref HttpApiGateway
+      AutoDeploy: true
+
+  #?IAM Role to allow sts:assumerole on lambda 1
+  lambda1IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: AppendToLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+        - PolicyName: SQSSendPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt SQSConductor.Arn
+  #?IAM Role to allow sts:assumerole on lambda 1
+  lambda2IAMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: AppendToLogsPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+        - PolicyName: PutAndGetItemFromTable
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                Resource: !GetAtt DynamoInstance.Arn
+        - PolicyName: SQSReadAndDeletePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt SQSConductor.Arn
+
+  ReaderLambdaPermissionApi:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt Lambda1.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApiGateway}/*"
+
+  #? Lambda Event Source Mapping
+  ConductorSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      Enabled: true
+      FunctionName: !GetAtt Lambda2.Arn
+      EventSourceArn: !GetAtt SQSConductor.Arn
+      BatchSize: 10
+      Queues:
+        - !Ref SQSQueueName
+
+  #?Allow User to update writer Lambda code
+  WriterLambdaUpdatePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:UpdateFunctionCode
+      FunctionName: !GetAtt Lambda2.Arn
+      Principal: arn:aws:iam::000468819253:user/alibi
+
+  #?Allow User to update reader Lambda Code
+  ReaderLambdaUpdatePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:UpdateFunctionCode
+      FunctionName: !GetAtt Lambda1.Arn
+      Principal: arn:aws:iam::000468819253:user/alibi
+
+  #?Lambda Write Function Declaration
+  Lambda2:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {}
+      Description: Writer Lambda Function
+      Environment:
+        Variables:
+          DATABASE_TABLE: !Ref DynamoInstance
+          REGION: !Ref AWS::Region
+          FIFOURL: !Ref SQSConductor
+      FunctionName: !Ref Lambda2FunctionName
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt lambda2IAMRole.Arn
+      Runtime: nodejs16.x
+
+  #?Lambda Function 1 Declaration
+  Lambda1:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        ZipFile: |
+          exports.handler = async(event)=>{}
+      Description: Reader Lambda Function
+      Environment:
+        Variables:
+          REGION: !Ref AWS::Region
+          FIFOURL: !Ref SQSConductor
+      FunctionName: !Ref Lambda1FunctionName
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt lambda1IAMRole.Arn
+      Runtime: nodejs16.x
+
+#?Outputs
+Outputs:
+  ApiUrl:
+    Description: URL of the HTTP API
+    Value: !Sub "https://${HttpApiGateway}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  Table:
+    Description: Test table
+    Value: !Ref DynamoInstance
