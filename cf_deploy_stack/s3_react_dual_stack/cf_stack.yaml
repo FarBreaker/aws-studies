@@ -6,15 +6,18 @@ AWSTemplateFormatVersion: 2010-09-09
 Parameters: 
   GithubOwner:
     Type: String
-    Default: qswitcher
+    Default: FarBreaker
     Description: "Github repo owner"
   GithubRepo:
     Type: String
-    Default: my-test-app
+    Default: repoName
     Description: "Github repo name"
   GithubOAuthToken:
     Type: String
     Description: "Github personal access token"
+  GitBranch:
+    Type: String
+    Description: "Branch to use for SCM"
 
 Resources:
   DeployBucket:
@@ -36,6 +39,7 @@ Resources:
         DefaultCacheBehavior:
           MinTTL: 86400
           MaxTTL: 3153600
+          CachePolicyId: "658327ea-f89d-4fab-a63d-7e88639e58f6"
           ForwardedValues:
             QueryString: true
           TargetOriginId: !Ref DeployBucket
@@ -61,7 +65,9 @@ Resources:
         BuildSpec: !Sub |
           version: 0.2
           phases:
-            install: 
+            install:
+              #If you use the Ubuntu standard image 2.0 or later, you must specify runtime-versions.
+              #If you specify runtime-versions and use an image other than Ubuntu standard image 2.0, the build fails.
               runtime-versions:
                 nodejs: 16
             pre_build:
@@ -71,34 +77,18 @@ Resources:
                 - npm install
             build:
               commands:
-                - echo Build started on `date`
+                - echo Build started on 'date'
                 - npm run build
             post_build:
               commands:
-                # copy the contents of /build to S3
-                - aws s3 cp --recursive --acl public-read ./build s3://${DeployBucket}/ 
-                # set the cache-control headers for service-worker.js to prevent
-                # browser caching
-                - >
-                  aws s3 cp --acl public-read 
-                  --cache-control="max-age=0, no-cache, no-store, must-revalidate" 
-                  ./build/service-worker.js s3://${DeployBucket}/
-                # set the cache-control headers for index.html to prevent
-                # browser caching
-                - >
-                  aws s3 cp --acl public-read 
-                  --cache-control="max-age=0, no-cache, no-store, must-revalidate" 
-                  ./frontend/build/index.html s3://${DeployBucket}/
-                # invalidate the CloudFront cache for index.html and service-worker.js
-                # to force CloudFront to update its edge locations with the new versions
-                - >
-                  aws cloudfront create-invalidation --distribution-id ${Distribution} 
-                  --paths /index.html /service-worker.js
+                - aws s3 cp --recursive --acl public-read ./build s3://${DeployBucket}/
+                - aws s3 cp --acl public-read --cache-control="max-age=0, no-cache, no-store, must-revalidate" ./build/index.html s3://${DeployBucket}/
+                - aws cloudfront create-invalidation --distribution-id ${Distribution} --paths /index.html
           artifacts:
             files:
-              - '/*'
-              - '/**/*'
-            base-directory: frontend/build
+              - "frontend/build/*"
+              - "frontend/build/**/*"
+
   # IAM role that allows CodeBuild to interact with S3, CloudWatch, and CloudFront
   CodeBuildRole:
     Type: AWS::IAM::Role
@@ -173,7 +163,7 @@ Resources:
               Configuration:
                 Owner: !Ref GithubOwner
                 Repo: !Ref GithubRepo
-                Branch: develop
+                Branch: !Ref GitBranch
                 OAuthToken: !Ref GithubOAuthToken
         - 
           Name: Build
