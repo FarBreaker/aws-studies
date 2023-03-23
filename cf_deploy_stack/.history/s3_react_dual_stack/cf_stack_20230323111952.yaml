@@ -206,7 +206,7 @@ Resources:
                 OAuthToken: !Ref GithubOAuthToken
         - Name: Code-Check
           Actions:
-            - Name: Sonar-Scan
+            - Name: Sonar Scan
               ActionTypeId:
                 Owner: AWS
                 Category: Build

@@ -187,7 +187,7 @@ Resources:
         Type: S3
       Stages:
         - 
-          Name: Source-Fetching
+          Name: Source Fetch
           Actions: 
             - 
               Name: Source
@@ -204,9 +204,9 @@ Resources:
                 Repo: !Ref GithubRepo
                 Branch: !Ref GitBranch
                 OAuthToken: !Ref GithubOAuthToken
-        - Name: Code-Check
+        - Name: Code Check
           Actions:
-            - Name: Sonar-Scan
+            - Name: Sonar Scan
               ActionTypeId:
                 Owner: AWS
                 Category: Build
@@ -215,9 +215,9 @@ Resources:
               InputArtifacts:
                 - Name: MyApp
               Configuration:
-                ProjectName: !Ref CodeScan
+                ProjectName: ! //aaaaaa
         - 
-          Name: Build-Execution
+          Name: Build Execution
           Actions: 
             - 
               Name: Build

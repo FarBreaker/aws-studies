@@ -204,7 +204,7 @@ Resources:
                 Repo: !Ref GithubRepo
                 Branch: !Ref GitBranch
                 OAuthToken: !Ref GithubOAuthToken
-        - Name: Code-Check
+        - Name: Code Check
           Actions:
             - Name: Sonar-Scan
               ActionTypeId:
