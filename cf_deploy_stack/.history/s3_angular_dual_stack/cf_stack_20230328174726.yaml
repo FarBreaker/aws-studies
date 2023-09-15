@@ -1,0 +1,285 @@
+# @format
+
+AWSTemplateFormatVersion: 2010-09-09
+
+
+Parameters: 
+  GithubOwner:
+    Type: String
+    Default: FarBreaker
+    Description: "Github repo owner"
+  GithubRepo:
+    Type: String
+    Default: repoName
+    Description: "Github repo name"
+  GithubOAuthToken:
+    Type: String
+    Description: "Github personal access token"
+  GitBranch:
+    Type: String
+    Description: "Branch to use for SCM"
+  SonarHost:
+    Type: String
+    Description: "Host of the SonarQube Server"
+  SonarProject:
+    Type: String
+    Description: "Project key for SonarQube Scanner"
+  SonarSecret:
+    Type: String
+    Description: "Token to authorize Sonar Scan"
+
+Resources:
+  DeployBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      WebsiteConfiguration:
+        IndexDocument: index.html
+  Distribution:
+    Type: "AWS::CloudFront::Distribution"
+    Properties:
+      DistributionConfig:
+        Origins:
+          - DomainName: !GetAtt DeployBucket.DomainName
+            Id: !Ref DeployBucket
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultRootObject: index.html
+        Enabled: true
+        DefaultCacheBehavior:
+          MinTTL: 86400
+          MaxTTL: 3153600
+          CachePolicyId: "658327ea-f89d-4fab-a63d-7e88639e58f6"
+          ForwardedValues:
+            QueryString: true
+          TargetOriginId: !Ref DeployBucket
+          ViewerProtocolPolicy: "allow-all"
+  CodeBuild:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: !Sub ${AWS::StackName}-CodeBuild
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        # The downloaded source code for the build will come from CodePipeline
+        Type: CODEPIPELINE
+        Name: MyProject
+      Source: 
+        Type: CODEPIPELINE
+      Environment:
+        # Linux container with node installed
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        Image: "aws/codebuild/amazonlinux2-x86_64-standard:4.0"
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          phases:
+            install:
+              #If you use the Ubuntu standard image 2.0 or later, you must specify runtime-versions.
+              #If you specify runtime-versions and use an image other than Ubuntu standard image 2.0, the build fails.
+              runtime-versions:
+                nodejs: 16
+            pre_build:
+              commands:
+                - npm i -g @angular/cli
+                - echo Installing source NPM dependencies...
+                - cd frontend
+                - npm install
+            build:
+              commands:
+                - echo Build started on 'date'
+                - ng build
+            post_build:
+              commands:
+                - ls -al
+                - aws s3 cp --recursive --acl public-read ./dist/frontend s3://${DeployBucket}/
+                - aws s3 cp --acl public-read --cache-control="max-age=0, no-cache, no-store, must-revalidate" ./dist/frontend/index.html s3://${DeployBucket}/
+                - aws cloudfront create-invalidation --distribution-id ${Distribution} --paths /index.html
+          artifacts:
+            files:
+              - "frontend/dist/frontend/*"
+              - "frontend/dist/frontend/**/*"
+  CodeScan:
+    Type: 'AWS::CodeBuild::Project'
+    Properties:
+      Name: !Sub ${AWS::StackName}-CodeScan
+      ServiceRole: !GetAtt CodeBuildRole.Arn
+      Artifacts:
+        # The downloaded source code for the build will come from CodePipeline
+        Type: CODEPIPELINE
+        Name: MyProject
+      Source: 
+        Type: CODEPIPELINE
+      Environment:
+        # Linux container with node installed
+        ComputeType: BUILD_GENERAL1_SMALL
+        Type: LINUX_CONTAINER
+        Image: "aws/codebuild/standard:6.0"
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: !Sub |
+          version: 0.2
+          env:
+            shell: bash
+          phases:
+            pre_build:
+              commands:
+                - mkdir /downloads/sonarqube -p
+                - cd /downloads/sonarqube
+                - wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.7.0.2747-linux.zip
+                - unzip sonar-scanner-cli-4.7.0.2747-linux.zip
+                - mv sonar-scanner-4.7.0.2747-linux /opt/sonar-scanner
+                - echo -e "sonar.host.url=${SonarHost}/ \n  sonar.sourceEncoding=UTF-8 \n sonar.qualitygate.wait=true " >> /opt/sonar-scanner/conf/sonar-scanner.properties
+                - echo -e "#/bin/bash \n export PATH='$PATH:/opt/sonar-scanner/bin'" >> /etc/profile.d/sonar-scanner.sh
+                - source /etc/profile.d/sonar-scanner.sh
+                - sonar-scanner -v
+            build:
+              commands:
+                - cd ../..
+                - cd /codebuild/output/src*/src
+                - sonar-scanner -Dsonar.projectKey=${SonarProject} -Dsonar.sources=. -Dsonar.host.url=${SonarHost} -Dsonar.projectVersion=$(date +"%d%m%y%H%M%S") -Dsonar.login=${SonarSecret}
+       
+  # IAM role that allows CodeBuild to interact with S3, CloudWatch, and CloudFront
+  CodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - 
+            Effect: Allow
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: /service-role/
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetBucketVersioning"
+                  - "s3:PutObject"
+                Resource: 
+                  - !GetAtt PipelineBucket.Arn
+                  - !Join ['', [!GetAtt PipelineBucket.Arn, "/*"]]
+              - 
+                Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetBucketVersioning"
+                  - "s3:PutObject"
+                  - "s3:PutObjectAcl"
+                Resource: 
+                  - !GetAtt DeployBucket.Arn
+                  - !Join ['', [!GetAtt DeployBucket.Arn, "/*"]]
+              -
+                Effect: Allow
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                  - "cloudfront:CreateInvalidation"
+                Resource:
+                  - "*"
+  CodePipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      RoleArn: !GetAtt CodePipeLineRole.Arn
+      ArtifactStore:
+        Location: !Ref PipelineBucket
+        Type: S3
+      Stages:
+        - 
+          Name: Source-Fetching
+          Actions: 
+            - 
+              Name: Source
+              ActionTypeId: 
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: 1
+              OutputArtifacts: 
+                - 
+                  Name: MyApp
+              Configuration:
+                Owner: !Ref GithubOwner
+                Repo: !Ref GithubRepo
+                Branch: !Ref GitBranch
+                OAuthToken: !Ref GithubOAuthToken
+        - Name: Code-Check
+          Actions:
+            - Name: Sonar-Scan
+              ActionTypeId:
+                Owner: AWS
+                Category: Build
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts:
+                - Name: MyApp
+              Configuration:
+                ProjectName: !Ref CodeScan
+        - 
+          Name: Build-Execution
+          Actions: 
+            - 
+              Name: Build
+              ActionTypeId: 
+                Category: Build
+                Owner: AWS
+                Version: 1
+                Provider: CodeBuild
+              InputArtifacts: 
+                - 
+                  Name: MyApp
+              OutputArtifacts: 
+                - 
+                  Name: MyAppBuild
+              Configuration:
+                ProjectName: !Ref CodeBuild
+  CodePipeLineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - 
+            Effect: Allow
+            Principal:
+              Service:
+                - "codepipeline.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: Allow
+                Action:
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:GetBucketVersioning"
+                  - "s3:PutObject"
+                Resource: 
+                  - !GetAtt PipelineBucket.Arn
+                  - !Join ['', [!GetAtt PipelineBucket.Arn, "/*"]]
+              - 
+                Effect: Allow  
+                Action:
+                  - "codebuild:BatchGetBuilds"
+                  - "codebuild:StartBuild"
+                Resource: "*"
+# Temp bucket for storing build artifacts
+  PipelineBucket: 
+    Type: 'AWS::S3::Bucket'
+    Properties: {}
