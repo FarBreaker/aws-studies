@@ -2,11 +2,14 @@
 
 AWSTemplateFormatVersion: 2010-09-09
 
-
-Parameters: 
+Parameters:
+  DistributionCNAMEs:
+    Type: String
+    Default: your.domain.com
+    Description: "CNAME to add to the Distribution"
   GithubOwner:
     Type: String
-    Default: FarBreaker
+    Default: RepoOwner
     Description: "Github repo owner"
   GithubRepo:
     Type: String
@@ -20,18 +23,66 @@ Parameters:
     Description: "Branch to use for SCM"
 
 Resources:
-  DeployBucket:
+  WebBucket:
     Type: "AWS::S3::Bucket"
     Properties:
       WebsiteConfiguration:
         IndexDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  WebBucketPolicy:
+    Type: "AWS::S3::BucketPolicy"
+    Properties:
+      Bucket:
+        Ref: "WebBucket"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Join
+              - ""
+              - - "arn:aws:s3:::"
+                - !Ref WebBucket
+                - "/*"
+
+  VideoBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: 3060RuleExpiryRule
+            Status: Enabled
+            ExpirationInDays: 365
+            Transitions:
+              - TransitionInDays: 30
+                StorageClass: ONEZONE_IA
+              - TransitionInDays: 60
+                StorageClass: GLACIER
+
+  BuildingBucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - Id: Cleanup
+            Status: Enabled
+            ExpirationInDays: 2
+
   Distribution:
     Type: "AWS::CloudFront::Distribution"
     Properties:
       DistributionConfig:
+        CNAMEs:
+          - !Ref DistributionCNAMEs
         Origins:
-          - DomainName: !GetAtt DeployBucket.DomainName
-            Id: !Ref DeployBucket
+          - DomainName: !GetAtt WebBucket.DomainName
+            Id: !Ref WebBucket
             S3OriginConfig:
               OriginAccessIdentity: ""
         DefaultRootObject: index.html
@@ -42,10 +93,15 @@ Resources:
           CachePolicyId: "658327ea-f89d-4fab-a63d-7e88639e58f6"
           ForwardedValues:
             QueryString: true
-          TargetOriginId: !Ref DeployBucket
+          TargetOriginId: !Ref WebBucket
           ViewerProtocolPolicy: "allow-all"
+        CustomErrorResponses:
+          - ErrorCachingMinTTL: 10
+            ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: "/index.html"
   CodeBuild:
-    Type: 'AWS::CodeBuild::Project'
+    Type: "AWS::CodeBuild::Project"
     Properties:
       Name: !Sub ${AWS::StackName}-CodeBuild
       ServiceRole: !GetAtt CodeBuildRole.Arn
@@ -53,13 +109,6 @@ Resources:
         # The downloaded source code for the build will come from CodePipeline
         Type: CODEPIPELINE
         Name: MyProject
-      Source: 
-        Type: CODEPIPELINE
-      Environment:
-        # Linux container with node installed
-        ComputeType: BUILD_GENERAL1_SMALL
-        Type: LINUX_CONTAINER
-        Image: "aws/codebuild/amazonlinux2-x86_64-standard:4.0"
       Source:
         Type: CODEPIPELINE
         BuildSpec: !Sub |
@@ -73,7 +122,6 @@ Resources:
             pre_build:
               commands:
                 - echo Installing source NPM dependencies...
-                - cd frontend
                 - npm install
             build:
               commands:
@@ -81,62 +129,26 @@ Resources:
                 - npm run build
             post_build:
               commands:
-                - aws s3 cp --recursive --acl public-read ./build s3://${DeployBucket}/
-                - aws s3 cp --acl public-read --cache-control="max-age=0, no-cache, no-store, must-revalidate" ./build/index.html s3://${DeployBucket}/
+                - aws s3 cp --recursive --acl public-read ./build s3://${WebBucket}/
+                - aws s3 cp --acl public-read --cache-control="max-age=0, no-cache, no-store, must-revalidate" ./build/index.html s3://${WebBucket}/
                 - aws cloudfront create-invalidation --distribution-id ${Distribution} --paths /index.html
           artifacts:
             files:
-              - "frontend/build/*"
-              - "frontend/build/**/*"
-  CodeScan:
-    Type: 'AWS::CodeBuild::Project'
-    Properties:
-      Name: !Sub ${AWS::StackName}-CodeScan
-      ServiceRole: !GetAtt CodeBuildRole.Arn
-      Artifacts:
-        # The downloaded source code for the build will come from CodePipeline
-        Type: CODEPIPELINE
-        Name: MyProject
-      Source: 
-        Type: CODEPIPELINE
+              - "build/*"
+              - "build/**/*"
       Environment:
         # Linux container with node installed
         ComputeType: BUILD_GENERAL1_SMALL
         Type: LINUX_CONTAINER
-        Image: "aws/codebuild/standard:6.0"
-      Source:
-        Type: CODEPIPELINE
-        BuildSpec: !Sub |
-          version: 0.2
-          env:
-            shell: bash
-          phases:
-            pre_build:
-              commands:
-                - mkdir /downloads/sonarqube -p
-                - cd /downloads/sonarqube
-                - wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-4.7.0.2747-linux.zip
-                - unzip sonar-scanner-cli-4.7.0.2747-linux.zip
-                - mv sonar-scanner-4.7.0.2747-linux /opt/sonar-scanner
-                - echo -e "sonar.host.url=http://18.159.248.89:9000/ \n  sonar.sourceEncoding=UTF-8 \n sonar.qualitygate.wait=true " >> /opt/sonar-scanner/conf/sonar-scanner.properties
-                - echo -e "#/bin/bash \n export PATH='$PATH:/opt/sonar-scanner/bin'" >> /etc/profile.d/sonar-scanner.sh
-                - source /etc/profile.d/sonar-scanner.sh
-                - sonar-scanner -v
-            build:
-              commands:
-                - cd ../..
-                - cd /codebuild/output/src*/src
-                - sonar-scanner -Dsonar.projectKey=Rione-24 -Dsonar.sources=. -Dsonar.host.url=http://18.159.248.89:9000/ -Dsonar.login=sqp_78f9178819f23981546e3ccc5e56b760ee92ca52
-       
-  # IAM role that allows CodeBuild to interact with S3, CloudWatch, and CloudFront
+        Image: "aws/codebuild/amazonlinux2-x86_64-standard:4.0"
+
   CodeBuildRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - 
-            Effect: Allow
+          - Effect: Allow
             Principal:
               Service:
                 - "codebuild.amazonaws.com"
@@ -147,30 +159,27 @@ Resources:
         - PolicyName: root
           PolicyDocument:
             Version: "2012-10-17"
-            Statement: 
-              - 
-                Effect: Allow
+            Statement:
+              - Effect: Allow
                 Action:
                   - "s3:GetObject"
                   - "s3:GetObjectVersion"
                   - "s3:GetBucketVersioning"
                   - "s3:PutObject"
-                Resource: 
-                  - !GetAtt PipelineBucket.Arn
-                  - !Join ['', [!GetAtt PipelineBucket.Arn, "/*"]]
-              - 
-                Effect: Allow
+                Resource:
+                  - !GetAtt BuildingBucket.Arn
+                  - !Join ["", [!GetAtt BuildingBucket.Arn, "/*"]]
+              - Effect: Allow
                 Action:
                   - "s3:GetObject"
                   - "s3:GetObjectVersion"
                   - "s3:GetBucketVersioning"
                   - "s3:PutObject"
                   - "s3:PutObjectAcl"
-                Resource: 
-                  - !GetAtt DeployBucket.Arn
-                  - !Join ['', [!GetAtt DeployBucket.Arn, "/*"]]
-              -
-                Effect: Allow
+                Resource:
+                  - !GetAtt WebBucket.Arn
+                  - !Join ["", [!GetAtt WebBucket.Arn, "/*"]]
+              - Effect: Allow
                 Action:
                   - "logs:CreateLogGroup"
                   - "logs:CreateLogStream"
@@ -178,70 +187,81 @@ Resources:
                   - "cloudfront:CreateInvalidation"
                 Resource:
                   - "*"
+
+  # PipelineWebhook:
+  #   Type: AWS::CodePipeline::Webhook
+  #   Properties:
+  #     Authentication: GITHUB_HMAC
+  #     AuthenticationConfiguration:
+  #       SecretToken: !Ref GithubOAuthToken
+  #     Filters:
+  #       - JsonPath: "$.ref"
+  #         MatchEquals: refs/heads/{Branch}
+  #     TargetPipeline: !Ref CodePipeline
+  #     TargetAction: Source
+  #     Name: ReleasePipelineHook
+  #     TargetPipelineVersion: !GetAtt CodePipeline.Version
+  #     RegisterWithThirdParty: true
+
   CodePipeline:
-    Type: 'AWS::CodePipeline::Pipeline'
+    Type: "AWS::CodePipeline::Pipeline"
     Properties:
       RoleArn: !GetAtt CodePipeLineRole.Arn
       ArtifactStore:
-        Location: !Ref PipelineBucket
+        Location: !Ref BuildingBucket
         Type: S3
       Stages:
-        - 
-          Name: Source-Fetching
-          Actions: 
-            - 
-              Name: Source
-              ActionTypeId: 
+        - Name: Source-Fetching
+          Actions:
+            - Name: Source
+              ActionTypeId:
                 Category: Source
                 Owner: ThirdParty
                 Provider: GitHub
                 Version: 1
-              OutputArtifacts: 
-                - 
-                  Name: MyApp
+              OutputArtifacts:
+                - Name: MyApp
               Configuration:
                 Owner: !Ref GithubOwner
                 Repo: !Ref GithubRepo
                 Branch: !Ref GitBranch
                 OAuthToken: !Ref GithubOAuthToken
-        - Name: Code-Check
+                PollForSourceChanges: false
+              RunOrder: 1
+        # - Name: Code-Check
+        #   Actions:
+        #     - Name: Sonar-Scan
+        #       ActionTypeId:
+        #         Owner: AWS
+        #         Category: Build
+        #         Version: 1
+        #         Provider: CodeBuild
+        #       InputArtifacts:
+        #         - Name: MyApp
+        #       Configuration:
+        #         ProjectName: !Ref CodeScan
+        - Name: Build-Execution
           Actions:
-            - Name: Sonar-Scan
+            - Name: Build
               ActionTypeId:
-                Owner: AWS
                 Category: Build
+                Owner: AWS
                 Version: 1
                 Provider: CodeBuild
               InputArtifacts:
                 - Name: MyApp
-              Configuration:
-                ProjectName: !Ref CodeScan
-        - 
-          Name: Build-Execution
-          Actions: 
-            - 
-              Name: Build
-              ActionTypeId: 
-                Category: Build
-                Owner: AWS
-                Version: 1
-                Provider: CodeBuild
-              InputArtifacts: 
-                - 
-                  Name: MyApp
-              OutputArtifacts: 
-                - 
-                  Name: MyAppBuild
+              OutputArtifacts:
+                - Name: MyAppBuild
               Configuration:
                 ProjectName: !Ref CodeBuild
+
   CodePipeLineRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - 
-            Effect: Allow
+          - Effect: Allow
             Principal:
               Service:
                 - "codepipeline.amazonaws.com"
@@ -251,24 +271,36 @@ Resources:
         - PolicyName: root
           PolicyDocument:
             Version: "2012-10-17"
-            Statement: 
-              - 
-                Effect: Allow
+            Statement:
+              - Effect: Allow
                 Action:
                   - "s3:GetObject"
                   - "s3:GetObjectVersion"
                   - "s3:GetBucketVersioning"
                   - "s3:PutObject"
-                Resource: 
-                  - !GetAtt PipelineBucket.Arn
-                  - !Join ['', [!GetAtt PipelineBucket.Arn, "/*"]]
-              - 
-                Effect: Allow  
+                Resource:
+                  - !GetAtt BuildingBucket.Arn
+                  - !Join ["", [!GetAtt BuildingBucket.Arn, "/*"]]
+              - Effect: Allow
                 Action:
                   - "codebuild:BatchGetBuilds"
                   - "codebuild:StartBuild"
                 Resource: "*"
-# Temp bucket for storing build artifacts
-  PipelineBucket: 
-    Type: 'AWS::S3::Bucket'
-    Properties: {}
+
+Outputs:
+  WebsiteURL:
+    Value: !GetAtt
+      - Distribution
+      - DomainName
+    Description: URL for website through cloudfront
+  S3BucketSecureURL:
+    Value: !Join
+      - ""
+      - - "https://"
+        - !GetAtt
+          - WebBucket
+          - DomainName
+    Description: URL of S3 bucket to hold website content
+  VideoBucket:
+    Value: !Ref VideoBucket
+    Description: Name of S3 bucket with video storage
